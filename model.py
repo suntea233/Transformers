@@ -8,7 +8,11 @@ from torch.utils.data import DataLoader
 from Datasets import Datasets
 import tqdm
 import numpy as np
+
 dataset = Datasets("C:\Attention\data\\train.txt")
+
+dataset.bulid_vocab(dataset.en_data,dataset.ch_data)
+
 dataloader = DataLoader(dataset, batch_size=16, num_workers=0,collate_fn=dataset.collate_fn)
 
 
@@ -20,7 +24,7 @@ numofblock = 4
 numofhead = 4
 encoder_vocab = len(dataset.ch_vocab)
 decoder_vocab = len(dataset.en_vocab)
-epochs = 25
+epochs = 50
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -78,15 +82,16 @@ class MultiHeadAttention(nn.Module):
         seq_len_shape = a.shape[2]
         if self.mask:
             self_padding_mask = self_padding_mask.unsqueeze(1).repeat(1, self.num_head, 1, 1)
-            masked = torch.zeros((batch_size_shape,1,seq_len_shape,seq_len_shape))
+            masked = torch.ones((batch_size_shape,1,seq_len_shape,seq_len_shape))
             masked = Variable((1 - torch.tril(masked, diagonal=0)) * (-2 ** 32 + 1)).to(DEVICE)
 
             assert masked.shape[-1] == self_padding_mask.shape[-1]
-            a = a + masked+ self_padding_mask
+            a = a + masked
+            a.masked_fill_(self_padding_mask,-1e9)
         else:
             enc_dec_padding_mask = enc_dec_padding_mask.unsqueeze(1).repeat(1, self.num_head, 1, 1)
 
-            a = a + enc_dec_padding_mask
+            a.masked_fill_(enc_dec_padding_mask,-1e9)
 
         a = F.softmax(a,dim=-1)
 
@@ -149,7 +154,7 @@ class EncoderLayer(nn.Module):
     def forward(self,x,padding_mask):
         attention_score = self.self_attention(x,x,x,self_padding_mask=None,enc_dec_padding_mask=padding_mask)
         outputs = attention_score + x
-        outputs = self.ln(outputs)
+        # outputs = self.ln(outputs)
         outputs = self.fc(outputs)
         return outputs.to(DEVICE)
 
@@ -185,7 +190,8 @@ class Encoder(nn.Module):
 
     def forward(self,x):
         enc_outputs = self.embedding(x)
-        enc_outputs = self.pe(enc_outputs)
+        enc_outputs = self.pe(enc_outputs.transpose(0,1)).transpose(0,1)
+
         padding_mask = get_padding_mask(x,x)
         for layer in self.layers:
             enc_outputs = layer(enc_outputs,padding_mask)
@@ -230,7 +236,7 @@ class Transformers(nn.Module):
 model = Transformers(encoder_vocab,decoder_vocab).to(DEVICE)
 criterion = nn.CrossEntropyLoss(ignore_index=1)
 optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.99)
-#
+# #
 for epoch in tqdm.tqdm(range(epochs)):
     total = []
     for enc_inputs,dec_inputs,dec_outputs in dataloader:
@@ -289,24 +295,35 @@ def greedy_decoder(model, enc_input, start_symbol):
 
 
 # enc_inputs, dec_inputs, dec_outputs = dataset.words2idx(sentences,'ch')
-test_data = Datasets('C:\Attention\data\\train.txt')
+test_data = Datasets('C:\Attention\data\\test.txt',False)
+
+test_data.en_vocab = dataset.en_vocab
+test_data.ch_vocab = dataset.ch_vocab
+
+
 # test_data = Datasets('C:\Attention\data\\test.txt')
-test_loader = DataLoader(test_data, batch_size=16, num_workers=0,collate_fn=dataset.collate_fn)
+test_loader = DataLoader(test_data, batch_size=16, num_workers=0,collate_fn = test_data.collate_fn)
+
+
+
 enc_inputs,dec_inputs,dec_outputs = next(iter(test_loader))
 
-for i in enc_inputs:
-    print(i)
-    print(test_data.idx2chwords(i))
+# print(enc_inputs)
+# print(dataset.idx2chwords([   2, 5358,  107,   41,  253,   14,  376,    9,   52,    4,    3,    1,
+#            1]))
+# for i in enc_inputs:
+#     print(i)
+#     print(test_data.idx2chwords(i))
 # for j in dec_inputs:
 #     print(test_data.idx2enwords(j))
 # for z in dec_outputs:
 #     print(test_data.idx2enwords(z))
-# print(enc_inputs.shape)
+
 print()
 print("="*30)
-print(enc_inputs)
+# print(enc_inputs)
 for i in range(len(enc_inputs)):
-    greedy_dec_predict = greedy_decoder(model, enc_inputs[i].view(1, -1).to(DEVICE), start_symbol=dataset.en_vocab["<bos>"])
+    greedy_dec_predict = greedy_decoder(model, enc_inputs[i].view(1, -1).to(DEVICE), start_symbol=test_data.en_vocab["<bos>"])
     print(enc_inputs[i], '->', greedy_dec_predict.squeeze())
-    print([test_data.idx2ch(t.item()) for t in enc_inputs[i]], '->',
-          [test_data.idx2en(n.item()) for n in greedy_dec_predict.squeeze()])
+    print(" ".join([dataset.idx2ch(t.item()) for t in enc_inputs[i] if t.item() not in [1,2,3]]), '->',
+          " ".join([dataset.idx2en(n.item()) for n in greedy_dec_predict.squeeze()]))

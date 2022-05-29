@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
 
 class Datasets(Dataset):
-    def __init__(self,path):
+    def __init__(self,path,train=True):
         super(Datasets, self).__init__()
         self.path = path
         self.ch_vocab = None
@@ -20,9 +20,8 @@ class Datasets(Dataset):
         self.BOS_IDX = 2
         self.EOS_IDX = 3
         self.special_symbols = ['<unk>', '<pad>', '<bos>', '<eos>']
-
+        self.train = train
         self.en_data,self.ch_data = self.preprocessing()
-        self.bulid_vocab(self.en_data,self.ch_data)
 
     def __len__(self):
         assert len(self.en_data) == len(self.ch_data)
