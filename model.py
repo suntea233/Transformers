@@ -154,7 +154,6 @@ class EncoderLayer(nn.Module):
     def forward(self,x,padding_mask):
         attention_score = self.self_attention(x,x,x,self_padding_mask=None,enc_dec_padding_mask=padding_mask)
         outputs = attention_score + x
-        # outputs = self.ln(outputs)
         outputs = self.fc(outputs)
         return outputs.to(DEVICE)
 
@@ -224,13 +223,10 @@ class Transformers(nn.Module):
 
 
     def forward(self,enc_inputs,dec_inputs):
-
         enc_outputs = self.encoder(enc_inputs)
         dec_outputs = self.decoder(dec_inputs,enc_inputs,enc_outputs)
         logits = self.linear(dec_outputs)
-
         logits = logits.view(-1, logits.size(-1))
-
         return logits
 
 model = Transformers(encoder_vocab,decoder_vocab).to(DEVICE)
@@ -292,32 +288,16 @@ def greedy_decoder(model, enc_input, start_symbol):
     greedy_dec_predict = dec_input[:, 1:]
     return greedy_dec_predict
 
-
-
 # enc_inputs, dec_inputs, dec_outputs = dataset.words2idx(sentences,'ch')
 test_data = Datasets('C:\Attention\data\\test.txt',False)
 
 test_data.en_vocab = dataset.en_vocab
 test_data.ch_vocab = dataset.ch_vocab
 
-
 # test_data = Datasets('C:\Attention\data\\test.txt')
 test_loader = DataLoader(test_data, batch_size=16, num_workers=0,collate_fn = test_data.collate_fn)
 
-
-
 enc_inputs,dec_inputs,dec_outputs = next(iter(test_loader))
-
-# print(enc_inputs)
-# print(dataset.idx2chwords([   2, 5358,  107,   41,  253,   14,  376,    9,   52,    4,    3,    1,
-#            1]))
-# for i in enc_inputs:
-#     print(i)
-#     print(test_data.idx2chwords(i))
-# for j in dec_inputs:
-#     print(test_data.idx2enwords(j))
-# for z in dec_outputs:
-#     print(test_data.idx2enwords(z))
 
 print()
 print("="*30)
