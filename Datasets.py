@@ -40,6 +40,7 @@ class Datasets(Dataset):
         res = []
         if language == 'en':
             for word in words:
+                # print(self.en_vocab[word])
                 res.append(self.en_vocab[word])
         else:
             for word in words:
@@ -113,9 +114,7 @@ class Datasets(Dataset):
         return ch_index, en_inputs_index, en_outputs_index
 
 
-#
-# data = Datasets("C:\Attention\data\\train.txt")
-#
+
 # print(data.en_vocab.get_itos()[0])
 # print(data.en_vocab.get_itos()[1])
 # print(data.en_vocab.get_itos()[2])

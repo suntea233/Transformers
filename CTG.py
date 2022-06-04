@@ -5,9 +5,8 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch import optim
 from torch.utils.data import DataLoader
-from Datasets import Datasets
 import tqdm
-import numpy as np
+from Datasets import Datasets
 
 dataset = Datasets("C:\Attention\data\\train.txt")
 
@@ -22,14 +21,16 @@ units = 512
 dropout_rate = 0.2
 numofblock = 4
 numofhead = 4
-encoder_vocab = len(dataset.ch_vocab)
-decoder_vocab = len(dataset.en_vocab)
+# encoder_vocab = len(dataset.ch_vocab)
+vocab_size = len(dataset.en_vocab)
 epochs = 10
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+
 def get_padding_mask(seq_q,seq_k):
-    # print(seq_k.size())
+    # print(seq_k.shape)
+    # print(seq_q.shape)
     batch_size, len_q = seq_q.size()
     batch_size, len_k = seq_k.size()
     padding_mask = seq_k.data.eq(1).unsqueeze(1)
@@ -42,8 +43,6 @@ class TokenEmbedding(nn.Module):
         self.embedding = nn.Embedding(vocab_size,emb_size)
 
     def forward(self,x):
-        # print(x.shape)
-
         return self.embedding(x).to(DEVICE) # shape = (batch_size,input_seq_len,emb_dim)
 
 
@@ -91,13 +90,13 @@ class MultiHeadAttention(nn.Module):
             a.masked_fill_(self_padding_mask,-1e9)
         else:
             enc_dec_padding_mask = enc_dec_padding_mask.unsqueeze(1).repeat(1, self.num_head, 1, 1)
-
             a.masked_fill_(enc_dec_padding_mask,-1e9)
 
         a = F.softmax(a,dim=-1)
 
         a = torch.matmul(a,v_)
         a = torch.reshape(a.permute(0, 2, 1, 3), shape=(q.shape[0],q.shape[1],q.shape[2]))
+        a = self.dropout(a)
         a += queries
         a = self.LayerNormalization(a).to(DEVICE)
         return a
@@ -115,7 +114,6 @@ class FC(nn.Module):
 
 
     def forward(self,x):
-        # print(x.shape)
         outputs = self.layer1(x)
         outputs = self.relu(outputs)
         outputs = self.layer2(outputs)
@@ -145,108 +143,87 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-
 class EncoderLayer(nn.Module):
     def __init__(self):
-        super().__init__()
-        self.self_attention = MultiHeadAttention(num_units=units,num_heads=4,dropout_rate=dropout_rate)
-        self.fc =FC(input_channels=d_model)
-        self.ln = nn.LayerNorm(d_model)
+        super(EncoderLayer, self).__init__()
+        self.mask_self_attention = MultiHeadAttention(units,numofhead,dropout_rate,True)
+        self.fc = FC(d_model)
 
-    def forward(self,x,padding_mask):
-        attention_score = self.self_attention(x,x,x,self_padding_mask=None,enc_dec_padding_mask=padding_mask)
-        # outputs = attention_score + x
-        outputs = self.fc(attention_score) # shape = (batch_size,seq_len,d_model)
+    def forward(self,inputs,padding_mask):
+        outputs = self.mask_self_attention(inputs,inputs,inputs,padding_mask,None)
+        outputs = self.fc(outputs)
         return outputs.to(DEVICE)
 
 
 class DecoderLayer(nn.Module):
     def __init__(self):
-        super().__init__()
-        self.self_attention = MultiHeadAttention(units,numofhead,dropout_rate,mask=True)
-        self.enc_dec_attention = MultiHeadAttention(units,numofhead,dropout_rate)
+        super(DecoderLayer, self).__init__()
+        self.self_attention = MultiHeadAttention(units,numofhead,dropout_rate,mask=False)
         self.fc = FC(d_model)
-        self.ln = nn.LayerNorm(d_model)
-
-    def forward(self,dec_inputs,enc_outputs,self_padding_mask,enc_dec_padding_mask):
-        dec_outputs = self.self_attention(dec_inputs,dec_inputs,dec_inputs,self_padding_mask,enc_dec_padding_mask=None)
-
-        # dec_outputs = dec_outputs + dec_inputs
-        # dec_outputs = self.ln(dec_outputs)
-
-        dec_outputs = self.fc(dec_outputs)
-
-        dec_enc_outputs = self.enc_dec_attention(dec_outputs,enc_outputs,enc_outputs,self_padding_mask=None,enc_dec_padding_mask=enc_dec_padding_mask)
-        # dec_enc_outputs = dec_enc_outputs + dec_outputs
-        # dec_enc_outputs = self.ln(dec_enc_outputs)
-        dec_enc_outputs = self.fc(dec_enc_outputs)
-        return dec_enc_outputs
 
 
-class Encoder(nn.Module):
-    def __init__(self,encoder_vocab):
-        super().__init__()
-        self.embedding = TokenEmbedding(encoder_vocab,units)
-        self.pe = PositionalEncoding()
-        self.layers = nn.ModuleList([EncoderLayer() for _ in range(numofblock)])
+    def forward(self,enc_outputs,padding_mask):
+        outputs = self.self_attention(enc_outputs,enc_outputs,enc_outputs,None,padding_mask)
+        outputs = self.fc(outputs)
+        return outputs.to(DEVICE)
 
-    def forward(self,x):
-        enc_outputs = self.embedding(x)
-        enc_outputs = self.pe(enc_outputs.transpose(0,1)).transpose(0,1)
-
-        padding_mask = get_padding_mask(x,x)
-        for layer in self.layers:
-            enc_outputs = layer(enc_outputs,padding_mask)
-        return enc_outputs
 
 
 class Decoder(nn.Module):
-    def __init__(self,decoder_vocab):
-        super().__init__()
-        self.embedding = TokenEmbedding(decoder_vocab,units)
-        self.pe = PositionalEncoding()
+    def __init__(self):
+        super(Decoder, self).__init__()
         self.layers = nn.ModuleList([DecoderLayer() for _ in range(numofblock)])
 
-    def forward(self,dec_inputs,enc_inputs,enc_outputs):
-        # print(dec_inputs.shape)
-        # print(enc_outputs)
-        dec_outputs = self.embedding(dec_inputs)
-        dec_outputs = self.pe(dec_outputs)
-        self_padding_mask = get_padding_mask(dec_inputs,dec_inputs).to(DEVICE)
-        enc_dec_padding_mask = get_padding_mask(dec_inputs,enc_inputs).to(DEVICE)
+    def forward(self,x,padding_mask):
         for layer in self.layers:
-            dec_outputs = layer(dec_outputs,enc_outputs,self_padding_mask,enc_dec_padding_mask)
-        return dec_outputs
+            x = layer(x,padding_mask)
+        return x
 
 
-class Transformers(nn.Module):
-    def __init__(self,encoder_vocab,decoder_vocab):
-        super().__init__()
-        self.encoder = Encoder(encoder_vocab).to(DEVICE)
-        self.decoder = Decoder(decoder_vocab).to(DEVICE)
-        self.linear = nn.Linear(d_model,decoder_vocab).to(DEVICE)
+class Encoder(nn.Module):
+    def __init__(self,vocab_size):
+        super(Encoder, self).__init__()
+        self.pe = PositionalEncoding()
+        self.embedding = TokenEmbedding(vocab_size,units)
+        self.layers = nn.ModuleList([EncoderLayer() for _ in range(numofblock)])
+
+    def forward(self,inputs):
+        outputs = self.embedding(inputs)
+        outputs = self.pe(outputs.transpose(0, 1)).transpose(0, 1)
+
+        padding_mask = get_padding_mask(inputs,inputs)
+        for layer in self.layers:
+            outputs = layer(outputs,padding_mask)
+        return outputs,padding_mask
 
 
-    def forward(self,enc_inputs,dec_inputs,epoch):
-        enc_outputs = self.encoder(enc_inputs)
-        dec_outputs = self.decoder(dec_inputs,enc_inputs,enc_outputs)
+
+class CTG(nn.Module):
+    def __init__(self,vocab_size):
+        super(CTG, self).__init__()
+        self.Encoder = Encoder(vocab_size)
+        self.Decoder = Decoder()
+        self.linear = nn.Linear(d_model,vocab_size)
+
+    def forward(self,x,epoch=None):
+        enc_outputs,padding_mask = self.Encoder(x)
+        dec_outputs = self.Decoder(enc_outputs,padding_mask)
         logits = self.linear(dec_outputs)
-        if epoch==9:
-            print(logits)
+
         logits = logits.view(-1, logits.size(-1))
         return logits
 
-model = Transformers(encoder_vocab,decoder_vocab).to(DEVICE)
+model = CTG(vocab_size).to(DEVICE)
 criterion = nn.CrossEntropyLoss(ignore_index=1)
 optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.99)
-# #
+
 for epoch in tqdm.tqdm(range(epochs)):
     total = []
-    for enc_inputs,dec_inputs,dec_outputs in dataloader:
+    for _,dec_inputs,dec_outputs in dataloader:
 
-        enc_inputs,dec_inputs,dec_outputs= enc_inputs.to(DEVICE),dec_inputs.to(DEVICE),dec_outputs.to(DEVICE)
+        dec_inputs,dec_outputs= dec_inputs.to(DEVICE),dec_outputs.to(DEVICE)
 
-        outputs = model(enc_inputs,dec_inputs,epoch)
+        outputs = model(dec_inputs,epoch)
 
         loss = criterion(outputs,dec_outputs.contiguous().view(-1))
         optimizer.zero_grad()
@@ -255,9 +232,7 @@ for epoch in tqdm.tqdm(range(epochs)):
         optimizer.step()
     print(sum(total)/len(total))
 
-
-#
-def greedy_decoder(model, enc_input, start_symbol):
+def greedy_decoder(model, start_symbol):
     """贪心编码
     For simplicity, a Greedy Decoder is Beam search when K=1. This is necessary for inference as we don't know the
     target sequence input. Therefore we try to generate the target input word by word, then feed it into the transformer.
@@ -267,52 +242,38 @@ def greedy_decoder(model, enc_input, start_symbol):
     :param start_symbol: The start symbol. In this example it is 'S' which corresponds to index 4
     :return: The target input
     """
-    enc_outputs = model.encoder(enc_input)
-    dec_input = torch.zeros(1, 0).type_as(enc_input.data)
+    inputs = torch.zeros(1, 0).long()
     terminal = False
     next_symbol = start_symbol
     while not terminal:
-        # 预测阶段：dec_input序列会一点点变长（每次添加一个新预测出来的单词）
-        dec_input = torch.cat([dec_input.to(DEVICE), torch.tensor([[next_symbol]], dtype=enc_input.dtype).to(DEVICE)],
+        # 预测阶段：inputs序列会一点点变长（每次添加一个新预测出来的单词）
+        inputs = torch.cat([inputs.to(DEVICE), torch.tensor([[next_symbol]], dtype=inputs.dtype).to(DEVICE)],
                               -1)
-        print("inputs:")
-        print(dec_input)
-        dec_outputs = model.decoder(dec_input, enc_input, enc_outputs)
-        projected = model.linear(dec_outputs)
-
-        prob = projected.squeeze(0).max(dim=-1, keepdim=False)[1]
+        # print("inputs:")
+        # print(inputs)
+        dec_outputs,padding_mask = model.Encoder(inputs)
+        dec_outputs = model.Decoder(dec_outputs,padding_mask)
+        dec_outputs = model.linear(dec_outputs)
+        # projected = model.linear(dec_outputs)
+        prob = dec_outputs.squeeze(0).max(dim=-1, keepdim=False)[1]
+        # print("prob:")
+        # print(dataset.idx2enwords(prob))
         # 增量更新（我们希望重复单词预测结果是一样的）
         # 我们在预测是会选择性忽略重复的预测的词，只摘取最新预测的单词拼接到输入序列中
-        print("prob:")
-        print(dataset.idx2enwords(prob.data))
         next_word = prob.data[-1]  # 拿出当前预测的单词(数字)。我们用x'_t对应的输出z_t去预测下一个单词的概率，不用z_1,z_2..z_{t-1}
         next_symbol = next_word
+        # print(dataset.idx2en(next_word))
         if next_symbol == dataset.en_vocab["<eos>"]:
             terminal = True
         # print(next_word)
 
     # greedy_dec_predict = torch.cat(
-    #     [dec_input.to(device), torch.tensor([[next_symbol]], dtype=enc_input.dtype).to(device)],
+    #     [inputs.to(device), torch.tensor([[next_symbol]], dtype=enc_input.dtype).to(device)],
     #     -1)
-    greedy_dec_predict = dec_input[:, 1:]
+    greedy_dec_predict = inputs[:, 1:]
     return greedy_dec_predict
 
-# enc_inputs, dec_inputs, dec_outputs = dataset.words2idx(sentences,'ch')
-test_data = Datasets('C:\Attention\data\\test.txt',False)
-
-test_data.en_vocab = dataset.en_vocab
-test_data.ch_vocab = dataset.ch_vocab
-
-# test_data = Datasets('C:\Attention\data\\test.txt')
-test_loader = DataLoader(test_data, batch_size=16, num_workers=0,collate_fn = test_data.collate_fn)
-
-enc_inputs,dec_inputs,dec_outputs = next(iter(test_loader))
-
-print()
-print("="*30)
-# print(enc_inputs)
-for i in range(len(enc_inputs)):
-    greedy_dec_predict = greedy_decoder(model, enc_inputs[i].view(1, -1).to(DEVICE), start_symbol=test_data.en_vocab["<bos>"])
-    print(enc_inputs[i], '->', greedy_dec_predict.squeeze())
-    print(" ".join([dataset.idx2ch(t.item()) for t in enc_inputs[i] if t.item() not in [1,2,3]]), '->',
-          " ".join([dataset.idx2en(n.item()) for n in greedy_dec_predict.squeeze()]))
+for i in range(20):
+    greedy_dec_predict = greedy_decoder(model, start_symbol=dataset.en_vocab["<bos>"])
+    # print(input[i], '->', greedy_dec_predict.squeeze())
+    print(" ".join([dataset.idx2en(n.item()) for n in greedy_dec_predict.squeeze()]))
