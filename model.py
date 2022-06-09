@@ -11,7 +11,7 @@ import numpy as np
 
 dataset = Datasets("C:\Attention\data\\train.txt")
 
-dataset.bulid_vocab(dataset.en_data,dataset.ch_data)
+dataset.build_vocab(dataset.en_data,dataset.ch_data)
 
 dataloader = DataLoader(dataset, batch_size=16, num_workers=0,collate_fn=dataset.collate_fn)
 
@@ -240,20 +240,21 @@ model = Transformers(encoder_vocab,decoder_vocab).to(DEVICE)
 criterion = nn.CrossEntropyLoss(ignore_index=1)
 optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.99)
 # #
-for epoch in tqdm.tqdm(range(epochs)):
-    total = []
-    for enc_inputs,dec_inputs,dec_outputs in dataloader:
-
-        enc_inputs,dec_inputs,dec_outputs= enc_inputs.to(DEVICE),dec_inputs.to(DEVICE),dec_outputs.to(DEVICE)
-
-        outputs = model(enc_inputs,dec_inputs,epoch)
-
-        loss = criterion(outputs,dec_outputs.contiguous().view(-1))
-        optimizer.zero_grad()
-        loss.backward()
-        total.append(loss)
-        optimizer.step()
-    print(sum(total)/len(total))
+# for epoch in tqdm.tqdm(range(epochs)):
+#     total = []
+#     for enc_inputs,dec_inputs,dec_outputs in dataloader:
+#
+#         enc_inputs,dec_inputs,dec_outputs= enc_inputs.to(DEVICE),dec_inputs.to(DEVICE),dec_outputs.to(DEVICE)
+#
+#         outputs = model(enc_inputs,dec_inputs,epoch)
+#         # print(outputs.shape)
+#         # print(dec_outputs.shape)
+#         loss = criterion(outputs,dec_outputs.contiguous().view(-1))
+#         optimizer.zero_grad()
+#         loss.backward()
+#         total.append(loss)
+#         optimizer.step()
+#     print(sum(total)/len(total))
 
 
 #

@@ -8,6 +8,10 @@ from torch.nn import Transformer
 import math
 from torch.utils.data import Dataset, DataLoader
 from torch.nn.utils.rnn import pad_sequence
+import os
+import nltk
+import pandas as pd
+
 
 class Datasets(Dataset):
     def __init__(self,path,train=True):
@@ -40,7 +44,6 @@ class Datasets(Dataset):
         res = []
         if language == 'en':
             for word in words:
-                # print(self.en_vocab[word])
                 res.append(self.en_vocab[word])
         else:
             for word in words:
@@ -70,7 +73,7 @@ class Datasets(Dataset):
             yield data_sample
 
 
-    def bulid_vocab(self,en,ch):
+    def build_vocab(self,en,ch):
         self.en_vocab = build_vocab_from_iterator(self.yield_tokens(en),min_freq=1,specials=self.special_symbols,special_first=True)
         self.ch_vocab = build_vocab_from_iterator(self.yield_tokens(ch),min_freq=1,specials=self.special_symbols,special_first=True)
         self.en_vocab.set_default_index(self.UNK_IDX)
@@ -93,6 +96,7 @@ class Datasets(Dataset):
 
 
     def collate_fn(self, batch_list):
+
         en_inputs_index, en_outputs_index, ch_index = [], [], []
         enPAD = self.en_vocab['<pad>']
         chPAD = self.ch_vocab['<pad>']
@@ -115,11 +119,115 @@ class Datasets(Dataset):
 
 
 
-# print(data.en_vocab.get_itos()[0])
-# print(data.en_vocab.get_itos()[1])
-# print(data.en_vocab.get_itos()[2])
-# print(data.en_vocab.get_itos()[3])
-# print(data.en_vocab.get_itos()[4])
-# print(data.en_vocab.get_itos()[5])
-# print(data.en_vocab.get_itos()[6])
-# print(data.en_vocab.get_itos()[7])
+
+
+
+
+class IMDB(Dataset):
+    def __init__(self,path):
+        super(IMDB, self).__init__()
+        self.vocab = None
+        self.UNK_IDX = 0
+        self.PAD_IDX = 1
+        self.BOS_IDX = 2
+        self.EOS_IDX = 3
+        self.special_symbols = ['<unk>', '<pad>', '<bos>', '<eos>']
+        self.path = path
+
+        # self.generate_csv()
+        self.csv = True
+
+        self.data,self.labels = self.preprocessing(path,self.csv)
+
+        self.build_vocab(self.data)
+
+    def __len__(self):
+        return len(self.data)
+
+
+    def __getitem__(self, item):
+        words = self.data[item]
+        labels = self.labels[item]
+        # print(type(words))
+        return self.words2idx(words),labels
+
+
+    def words2idx(self,words):
+        res = []
+        for word in words:
+            res.append(self.vocab[word])
+        return torch.tensor(res)
+
+
+    def preprocessing(self,url,csv=False):
+        if csv:
+            temp = pd.read_csv("C:\Attention\\aclImdb\\train\\imdb.csv")
+            sentences= []
+            for sentence in temp['sentences']:
+                sentences.append(eval(sentence))
+            labels = temp['labels'].tolist()
+            return sentences,labels
+        else:
+            file = os.listdir(url)
+            sentences = []
+            for f in file:
+                real_url = os.path.join(url,f)
+                with open(real_url,'r',encoding='utf-8') as fread:
+                    temp = fread.read().replace("<br />","").replace("(","").replace(")","").replace(".","").replace(',',"").replace("``","").replace("'","").replace('"',"").replace("-","").replace("#","").lower()
+                    temp = nltk.word_tokenize(temp)
+                    sentences.append(["<bos>"]+temp+['<eos>'])
+            return sentences
+
+    def idx2word(self,id):
+        return self.vocab.get_itos()[id]
+
+
+    def idx2words(self,ids):
+        return ' '.join([self.idx2word(id) for id in ids])
+
+
+    def generate_csv(self):
+        neg_sentences = self.preprocessing("C:\Attention\\aclImdb\\train\\neg")
+        print("neg completely")
+
+        pos_sentences = self.preprocessing("C:\Attention\\aclImdb\\train\\pos")
+        print("pos completely")
+        neg_labels = [0 for _ in range(len(neg_sentences))]
+        pos_labels = [1 for _ in range(len(pos_sentences))]
+        result = pd.DataFrame({"sentences": neg_sentences+pos_sentences, "labels": neg_labels+pos_labels})
+        result.to_csv("C:\Attention\\aclImdb\\train\\imdb.csv")
+
+
+
+    def yield_tokens(self,data_iter):
+        for data_sample in data_iter:
+            yield data_sample
+
+
+    def build_vocab(self,word):
+        self.vocab = build_vocab_from_iterator(self.yield_tokens(word),min_freq=1,specials=self.special_symbols,special_first=True)
+        self.vocab.set_default_index(self.UNK_IDX)
+
+
+    def collate_fn(self, batch_list):
+        inputs_index, outputs_index, labels = [], [], []
+        PAD = self.vocab['<pad>']
+        for word,label in batch_list:
+            inputs_index.append(word[:-1])
+            outputs_index.append(word[1:])
+            labels.append(label)
+        inputs_index = pad_sequence(inputs_index, padding_value=PAD)
+        outputs_index = pad_sequence(outputs_index, padding_value=PAD)
+
+        inputs_index = inputs_index.transpose(0, 1)
+        outputs_index = outputs_index.transpose(0, 1)
+
+        return inputs_index, outputs_index, labels
+
+
+
+# data = IMDB("C:\Attention\\aclImdb\\train\\neg")
+# print(data[0])
+# dataset = Datasets("C:\Attention\data\\train.txt")
+# dataset.build_vocab(dataset.en_data,dataset.ch_data)
+# print(dataset[0])

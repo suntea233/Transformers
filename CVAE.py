@@ -1,3 +1,4 @@
+from Datasets import IMDB
 import torch.nn as nn
 import math
 import torch
@@ -6,23 +7,19 @@ from torch.autograd import Variable
 from torch import optim
 from torch.utils.data import DataLoader
 import tqdm
-from Datasets import Datasets
+data = IMDB("C:\Attention\\aclImdb\\train\\neg")
 
-dataset = Datasets("C:\Attention\data\\train.txt")
+dataloader = DataLoader(data, batch_size=16, num_workers=0,collate_fn=data.collate_fn,shuffle=True)
 
-dataset.build_vocab(dataset.en_data,dataset.ch_data)
-
-dataloader = DataLoader(dataset, batch_size=16, num_workers=0,collate_fn=dataset.collate_fn)
-
-
+print("data completely")
 maxlen = 128
 d_model = 512
 units = 512
 dropout_rate = 0.2
 numofblock = 4
-numofhead = 4
+numofhead = 2
 # encoder_vocab = len(dataset.ch_vocab)
-vocab_size = len(dataset.en_vocab)
+vocab_size = len(data.vocab)
 epochs = 10
 latent_dim = 512
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -46,6 +43,29 @@ class TokenEmbedding(nn.Module):
         # print(x.shape)
 
         return self.embedding(x).to(DEVICE) # shape = (batch_size,input_seq_len,emb_dim)
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, units, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, units)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, units, 2).float() * (-math.log(10000.0) / units))
+        # print(position.shape)
+        # print(div_term.shape)
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        """
+        x: [seq_len, batch_size, d_model]
+        """
+        x = x + self.pe[:x.size(0), :]
+        return self.dropout(x)
 
 
 class MultiHeadAttention(nn.Module):
@@ -105,7 +125,7 @@ class MultiHeadAttention(nn.Module):
 
 
 class FC(nn.Module):
-    def __init__(self,input_channels,units=(2048,512)):
+    def __init__(self,input_channels,units=(2048,d_model)):
         super().__init__()
         self.input_channels = input_channels
         self.units = units
@@ -124,31 +144,10 @@ class FC(nn.Module):
         return outputs.to(DEVICE)
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model=d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        """
-        x: [seq_len, batch_size, d_model]
-        """
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
-
-
 class EncoderLayer(nn.Module):
     def __init__(self):
         super(EncoderLayer, self).__init__()
-        self.mask_self_attention = MultiHeadAttention(units,numofhead,dropout_rate,True)
+        self.mask_self_attention = MultiHeadAttention(d_model,numofhead,dropout_rate,True)
         self.fc = FC(d_model)
 
 
@@ -162,7 +161,7 @@ class EncoderLayer(nn.Module):
 class DecoderLayer(nn.Module):
     def __init__(self):
         super(DecoderLayer, self).__init__()
-        self.self_attention = MultiHeadAttention(units,numofhead,dropout_rate,mask=False)
+        self.self_attention = MultiHeadAttention(d_model,numofhead,dropout_rate,mask=False)
         self.fc = FC(d_model)
 
 
@@ -172,14 +171,16 @@ class DecoderLayer(nn.Module):
         return outputs.to(DEVICE)
 
 
-
 class Decoder(nn.Module):
     def __init__(self):
         super(Decoder, self).__init__()
         self.layers = nn.ModuleList([DecoderLayer() for _ in range(numofblock)])
+        self.fc1 = nn.Linear(2, 256)
+        self.fc2 = nn.Linear(512, 256)
 
-
-    def forward(self,x):
+    def forward(self,x,labels):
+        x,y = self.fc2(x),self.fc1(labels)
+        x = torch.cat((x,y),dim=-1)
         for layer in self.layers:
             x = layer(x)
         return x
@@ -188,15 +189,25 @@ class Decoder(nn.Module):
 class Encoder(nn.Module):
     def __init__(self,vocab_size):
         super(Encoder, self).__init__()
-        self.pe = PositionalEncoding()
+        self.pe = PositionalEncoding(units)
         self.embedding = TokenEmbedding(vocab_size,units)
         self.layers = nn.ModuleList([EncoderLayer() for _ in range(numofblock)])
+        self.fc1 = nn.Linear(2,256)
+        self.fc2 = nn.Linear(512,256)
 
 
-    def forward(self,inputs):
+    def forward(self,inputs,labels):
         outputs = self.embedding(inputs)
         outputs = self.pe(outputs.transpose(0, 1)).transpose(0, 1)
-
+        seq_len = inputs.size()[1]
+        labels = F.one_hot(labels,num_classes=2)
+        labels = labels.unsqueeze(1)
+        labels = labels.repeat(1, seq_len, 1).float()
+        # print(self.fc1(labels))
+        x = self.fc2(outputs)
+        y = self.fc1(labels)
+        outputs = torch.cat((x,y),dim=-1)
+        print(outputs.shape)
         padding_mask = get_padding_mask(inputs,inputs)
         for layer in self.layers:
             outputs = layer(outputs,padding_mask)
@@ -213,24 +224,28 @@ class CTG(nn.Module):
         self.mean = nn.Linear(d_model,latent_dim)
         self.log_var = nn.Linear(d_model,latent_dim)
 
+
     def reparameterize(self,z_mean,z_log_var):
         std = torch.exp(0.5 * z_log_var)
         eps = torch.randn_like(std)
         return eps * std + z_mean
 
 
-    def forward(self,x):
-        enc_outputs,padding_mask = self.Encoder(x)
+    def forward(self,inputs,labels):
+
+        enc_outputs,padding_mask = self.Encoder(inputs,labels)
 
         z_mean = self.mean(enc_outputs)
         z_log_var = self.log_var(enc_outputs)
 
         z = self.reparameterize(z_mean,z_log_var)
-        enc_outputs = self.Decoder(z)
+        enc_outputs = self.Decoder(z,labels)
         logits = self.linear(enc_outputs)
 
         logits = logits.view(-1, logits.size(-1))
         return logits,z_mean,z_log_var
+
+
 
 model = CTG(vocab_size).to(DEVICE)
 criterion = nn.CrossEntropyLoss(ignore_index=1)
@@ -239,15 +254,15 @@ optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.99)
 
 for epoch in tqdm.tqdm(range(epochs)):
     total = []
-    for _,dec_inputs,dec_outputs in dataloader:
+    for inputs,outputs,labels in dataloader:
+        labels = torch.tensor(labels)
+        inputs,outputs,labels= inputs.to(DEVICE), outputs.to(DEVICE), labels.to(DEVICE)
 
-        dec_inputs,dec_outputs= dec_inputs.to(DEVICE),dec_outputs.to(DEVICE)
+        logits,z_mean,z_log_var = model(inputs,labels)
 
-        outputs,z_mean,z_log_var = model(dec_inputs)
+        normal_loss = criterion(logits,outputs.contiguous().view(-1))
 
-        normal_loss = criterion(outputs,dec_outputs.contiguous().view(-1))
-
-        reconstruction_loss = F.cross_entropy(outputs,dec_outputs.contiguous().view(-1))
+        reconstruction_loss = F.cross_entropy(logits,outputs.contiguous().view(-1))
         kl_loss = torch.mean(0.5 * torch.sum(torch.exp(z_log_var) + z_mean ** 2 - 1. - z_log_var, 1))
 
         loss = normal_loss + reconstruction_loss + kl_loss
@@ -289,7 +304,7 @@ def greedy_decoder(model, start_symbol):
         next_word = prob.data[-1]  # 拿出当前预测的单词(数字)。我们用x'_t对应的输出z_t去预测下一个单词的概率，不用z_1,z_2..z_{t-1}
         next_symbol = next_word
         # print(dataset.idx2en(next_word))
-        if next_symbol == dataset.en_vocab["<eos>"]:
+        if next_symbol == data.vocab["<eos>"]:
             terminal = True
         # print(next_word)
 
@@ -300,6 +315,6 @@ def greedy_decoder(model, start_symbol):
     return greedy_dec_predict
 
 for i in range(20):
-    greedy_dec_predict = greedy_decoder(model, start_symbol=dataset.en_vocab["<bos>"])
+    greedy_dec_predict = greedy_decoder(model, start_symbol=data.vocab["<bos>"])
     # print(input[i], '->', greedy_dec_predict.squeeze())
-    print(" ".join([dataset.idx2en(n.item()) for n in greedy_dec_predict.squeeze()]))
+    print(" ".join([data.idx2word(n.item()) for n in greedy_dec_predict.squeeze()]))
