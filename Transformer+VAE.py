@@ -95,7 +95,6 @@ optimizer_vae = optim.AdamW(model.parameters(),lr=1e-3,weight_decay=1e-6)
 for epoch in tqdm.tqdm(range(epochs)):
     total = []
     for enc_inputs,dec_inputs,dec_outputs in dataloader:
-        # print(enc_inputs.type())
         enc_inputs,dec_inputs,dec_outputs= enc_inputs.to(DEVICE),dec_inputs.to(DEVICE),dec_outputs.to(DEVICE)
         outputs,z_mean,z_log_var,vae_inputs,vae_outputs = model(enc_inputs,dec_inputs)
         loss1 = criterion(outputs,dec_outputs.contiguous().view(-1))
