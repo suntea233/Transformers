@@ -9,7 +9,9 @@ from torch.utils.data import DataLoader
 import tqdm
 data = SST2("C:\Attention\pytorch-master\\bert-sst2\sst2_shuffled.tsv")
 
-dataloader = DataLoader(data, batch_size=16, num_workers=0,collate_fn=data.collate_fn,shuffle=True)
+
+batch_size = 16
+dataloader = DataLoader(data, batch_size=batch_size, num_workers=0,collate_fn=data.collate_fn,shuffle=True)
 
 print("data completely")
 maxlen = 128
@@ -208,12 +210,35 @@ class Encoder(nn.Module):
 
     def forward(self,inputs):
         outputs = self.embedding(inputs)
-        outputs = self.pe(outputs.transpose(0, 1)).transpose(0, 1)
-
+        outputs = self.pe(outputs)
         padding_mask = get_padding_mask(inputs,inputs)
         for layer in self.layers:
             outputs = layer(outputs,padding_mask)
         return outputs,padding_mask
+
+
+class LabelDiscriminator(nn.Module):
+    def __init__(self):
+        super(LabelDiscriminator, self).__init__()
+        self.fc1 = nn.Linear(512+2,2048)
+        self.fc2 = nn.Linear(2048,4096)
+        self.fc3 = nn.Linear(4096,1024)
+        self.fc4 = nn.Linear(1024,512)
+        self.fc5 = nn.Linear(512,1)
+        self.fc = nn.Sequential(self.fc1,nn.ReLU(),self.fc2,nn.ReLU(),self.fc3,nn.ReLU(),self.fc4,nn.ReLU(),self.fc5)
+
+
+    def forward(self,x,labels):
+        x = x.float()
+        seq_len = x.size()[1]
+
+        labels = F.one_hot(labels,num_classes=2)
+        labels = labels.unsqueeze(1)
+        labels = labels.repeat(1, seq_len, 1).float()
+        labels = labels.float()
+
+        x = self.fc(torch.cat((x,labels),dim=-1))
+        return x
 
 
 class CTG(nn.Module):
@@ -224,7 +249,9 @@ class CTG(nn.Module):
         self.linear = nn.Linear(d_model,vocab_size)
         self.mean = nn.Linear(d_model,latent_dim)
         self.log_var = nn.Linear(d_model,latent_dim)
-
+        self.D = LabelDiscriminator()
+        self.pe = PositionalEncoding(units)
+        self.embedding = TokenEmbedding(vocab_size,units)
 
     def reparameterize(self,z_mean,z_log_var):
         std = torch.exp(0.5 * z_log_var)
@@ -233,69 +260,73 @@ class CTG(nn.Module):
 
 
     def forward(self,inputs,labels):
+        outputs = self.embedding(inputs)
+        outputs = self.pe(outputs.transpose(0, 1)).transpose(0, 1)
 
         enc_outputs,padding_mask = self.Encoder(inputs)
 
         z_mean = self.mean(enc_outputs)
         z_log_var = self.log_var(enc_outputs)
-
         z = self.reparameterize(z_mean,z_log_var)
         enc_outputs = self.Decoder(z,labels)
+        # print(enc_outputs.shape)
         logits = self.linear(enc_outputs)
-
+        # print(logits.shape)
         logits = logits.view(-1, logits.size(-1))
-        return logits,z_mean,z_log_var
+
+
+        real_D = self.D(outputs,labels)
+        fake_D = self.D(enc_outputs,labels)
+
+
+
+        return logits,z_mean,z_log_var,real_D, fake_D
 
 
 
 model = CTG(vocab_size).to(DEVICE)
+Discriminator = LabelDiscriminator().to(DEVICE)
 criterion = nn.CrossEntropyLoss(ignore_index=1)
 optimizer = optim.SGD(model.parameters(), lr=1e-3, momentum=0.99)
+D_optimizer = optim.AdamW(Discriminator.parameters(),lr=1e-4,weight_decay=1e-6)
 
 
-for epoch in tqdm.tqdm(range(epochs)):
-    total = []
-    for inputs,outputs,labels in dataloader:
-        labels = torch.tensor(labels)
-        inputs,outputs,labels= inputs.to(DEVICE), outputs.to(DEVICE), labels.to(DEVICE)
-
-        logits,z_mean,z_log_var = model(inputs,labels)
-
-        normal_loss = criterion(logits,outputs.contiguous().view(-1))
-
-        reconstruction_loss = F.cross_entropy(logits,outputs.contiguous().view(-1))
-        kl_loss = torch.mean(0.5 * torch.sum(torch.exp(z_log_var) + z_mean ** 2 - 1. - z_log_var, 1))
-
-        loss = normal_loss + reconstruction_loss + kl_loss
-        optimizer.zero_grad()
-        loss.backward()
-        total.append(loss)
-        optimizer.step()
-    print(sum(total)/len(total))
 
 for epoch in tqdm.tqdm(range(epochs)):
     total = []
     kl = []
-
+    recon = []
+    d = []
     for inputs, outputs, labels in dataloader:
         labels = torch.tensor(labels)
         inputs, outputs, labels = inputs.to(DEVICE), outputs.to(DEVICE), labels.to(DEVICE)
 
-        logits, z_mean, z_log_var = model(inputs, labels)
+        logits, z_mean, z_log_var, real_D, fake_D = model(inputs, labels)
+
+        d_loss = F.cross_entropy(real_D,torch.ones((batch_size,1)).long().to(DEVICE))
+        g_loss = F.cross_entropy(fake_D,torch.zeros((batch_size,1)).long().to(DEVICE))
 
         normal_loss = criterion(logits, outputs.contiguous().view(-1))
-
         reconstruction_loss = F.cross_entropy(logits, outputs.contiguous().view(-1))
         kl_loss = torch.mean(0.5 * torch.sum(torch.exp(z_log_var) + z_mean ** 2 - 1. - z_log_var, 1))
 
+
+        # Discriminator
+        D_optimizer.zero_grad()
+        d_loss.backward()
+        d.append(d_loss)
+        D_optimizer.step()
+
+        # transformers
         loss = normal_loss + reconstruction_loss + kl_loss
         optimizer.zero_grad()
         loss.backward()
-        total.append(loss)
+        total.append(normal_loss)
         kl.append(kl_loss)
+        recon.append(reconstruction_loss)
         optimizer.step()
 
-    print("total_loss = {0},kl_loss = {1}".format(sum(total) / len(total), sum(kl) / len(kl)))
+    print("normal_loss = {0},recon_loss = {2},kl_loss = {1}, d_loss = {3}".format(sum(total) / len(total), sum(kl) / len(kl),sum(recon)/len(recon),sum(d)/len(d)))
 
 
 

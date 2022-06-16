@@ -203,7 +203,6 @@ class Encoder(nn.Module):
         return outputs,padding_mask
 
 
-
 class CTG(nn.Module):
     def __init__(self,vocab_size):
         super(CTG, self).__init__()
@@ -212,6 +211,8 @@ class CTG(nn.Module):
         self.linear = nn.Linear(d_model,vocab_size)
         self.mean = nn.Linear(d_model,latent_dim)
         self.log_var = nn.Linear(d_model,latent_dim)
+        self.labelD = LabelDiscriminator()
+
 
     def reparameterize(self,z_mean,z_log_var):
         std = torch.exp(0.5 * z_log_var)

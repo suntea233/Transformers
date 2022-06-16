@@ -323,5 +323,5 @@ class SST2(Dataset):
         return inputs_index, outputs_index, labels
 
 
-data = SST2("C:\Attention\pytorch-master\\bert-sst2\sst2_shuffled.tsv")
-print(data.words2idx(""))
+# data = SST2("C:\Attention\pytorch-master\\bert-sst2\sst2_shuffled.tsv")
+# print(data.words2idx(""))
